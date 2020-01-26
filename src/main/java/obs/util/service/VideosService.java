@@ -45,12 +45,14 @@ public class VideosService {
   private final ConcurrentMap<String, Video> storage = new ConcurrentHashMap<>();
   private final Yaml yaml;
   private final DateJob dateJob;
+  private final MarkdownConverterService markdownConverterService;
   private ActiveVideo activeVideo = new ActiveVideo();
   @Getter
   private String baseDirectory;
   private String tmpFilesDirectory;
 
-  public VideosService(DateJob dateJob, @Value("${basedir:~/.obs-util}") String baseDir) throws IOException {
+  public VideosService(DateJob dateJob, @Value("${basedir:~/.obs-util}") String baseDir, MarkdownConverterService markdownConverterService) throws IOException {
+    this.markdownConverterService = markdownConverterService;
     if (baseDir.startsWith("~/")) {
       String replace = baseDir.replace("~/", "");
       String home = System.getProperty("user.home");
@@ -89,12 +91,20 @@ public class VideosService {
     log.info("About to add new video from bytes..");
     return just(bytes)
       .map(this::createVideo)
-      .map(this::addToStorage);
+      .map(this::addToStorage)
+      .map(this::saveToMarkdown);
   }
 
   public Video addToStorage(Video video) {
     storage.put(video.getId(), video);
     log.info("Video '{}' added to storage.", video.getId());
+    return video;
+  }
+
+  public Video saveToMarkdown(Video video) throws Exception {
+    var markdown = markdownConverterService.transformToMarkdown(video);
+    dateJob.writeToFile(activeVideo.getMarkdownFile(), markdown);
+    log.info("Markdown file written.");
     return video;
   }
 
@@ -181,6 +191,15 @@ public class VideosService {
     }
 
     boolean emptyText = clean || Objects.isNull(video) || Objects.isNull(resource);
+    ResourceType resourceType =  resource.getType();
+    long count = video.getResources().stream()
+      .filter(resource1 -> resource1.getType().equals(resourceType)).count();
+    int size = video.getResources().size();
+    long l = index + 1;
+
+    log.info("De los recursos de tipo {}, hay {} elementos", resourceType.getName(), count);
+    log.info("Elementos totales {}", size);
+    log.info("({}-{})", l, count);
 
     String name = emptyText ? "" : resource.getName();
     String url = emptyText ? "" : resource.getUrl();
