@@ -1,14 +1,18 @@
 package obs.util.service;
 
 import io.micronaut.context.annotation.Value;
+import io.micronaut.runtime.event.annotation.EventListener;
+import io.micronaut.runtime.server.event.ServerStartupEvent;
 import io.reactivex.Maybe;
 import io.reactivex.schedulers.Schedulers;
 import lombok.Getter;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import net.coobird.thumbnailator.Thumbnails;
 import obs.util.model.*;
 import org.apache.commons.imaging.*;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.FilenameUtils;
 import org.yaml.snakeyaml.Yaml;
 
 import javax.annotation.PostConstruct;
@@ -20,6 +24,7 @@ import java.awt.image.RescaleOp;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,24 +42,35 @@ import static java.awt.AlphaComposite.Src;
 import static java.awt.image.BufferedImage.TYPE_INT_ARGB;
 import static java.lang.Boolean.FALSE;
 import static java.lang.Boolean.TRUE;
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
+import static java.util.Objects.nonNull;
 import static java.util.Optional.ofNullable;
+import static org.apache.commons.codec.digest.DigestUtils.getSha512Digest;
 
 @Slf4j
 @Singleton
 public class VideosService {
+  public static final String BLANK_STRING = "";
   private final ConcurrentMap<String, Video> storage = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, List<UserLiveComment>> comments = new ConcurrentHashMap<>();
   private final Yaml yaml;
   private final DateJob dateJob;
   private final MarkdownConverterService markdownConverterService;
+  private final YouTubeService youTubeService;
   private ActiveVideo activeVideo = new ActiveVideo();
   @Getter
   private String baseDirectory;
   private String tmpFilesDirectory;
 
-  public VideosService(DateJob dateJob, @Value("${basedir:~/.obs-util}") String baseDir, MarkdownConverterService markdownConverterService) throws IOException {
+  @SneakyThrows
+  public VideosService(DateJob dateJob,
+                       @Value("${basedir:~/.obs-util}") String baseDir,
+                       MarkdownConverterService markdownConverterService,
+                       YouTubeService youTubeService) throws IOException {
     this.markdownConverterService = markdownConverterService;
+    this.youTubeService = youTubeService;
     if (baseDir.startsWith("~/")) {
-      String replace = baseDir.replace("~/", "");
+      String replace = baseDir.replace("~/", BLANK_STRING);
       String home = System.getProperty("user.home");
       baseDirectory = home + "/" + replace;
     } else {
@@ -71,6 +87,12 @@ public class VideosService {
     Files.createDirectories(baseDirectoryPath);
     Files.createDirectories(tmpDirectoryPath);
     activeVideo.setBaseWorkDir(baseDirectory);
+  }
+
+  @SneakyThrows
+  @EventListener
+  void onStartup(ServerStartupEvent event) {
+    generateGeneralEmptyFiles();
   }
 
   private Video createVideo(byte[] bytes) {
@@ -93,6 +115,35 @@ public class VideosService {
       .map(this::createVideo)
       .map(this::addToStorage)
       .map(this::saveToMarkdown);
+  }
+
+  public Video createDateJob(Video video) throws Exception {
+    String startTimeFile = activeVideo.getStartTimeFile();
+    dateJob.writeToFile(startTimeFile, BLANK_STRING);
+
+    FileProps timeInfo = video.getStartTimeInfo();
+    if (nonNull(timeInfo)) {
+      log.info("Video '{}' with start date.", video.getId());
+      log.info("FileProps: {}", timeInfo.toString());
+      FileProps build = FileProps.builder()
+        .cronExpression(timeInfo.getCronExpression())
+        .outputFormat(timeInfo.getOutputFormat())
+        .destination(startTimeFile)
+        .dateFormatPattern(timeInfo.getDateFormatPattern())
+        .id(video.getId())
+        .prefix(timeInfo.getPrefix())
+        .startedMessage(timeInfo.getStartedMessage())
+        .startTime(video.getStartTimeInfo().getStartTime())
+        .timeZone(timeInfo.getTimeZone())
+        .build();
+
+      log.info("FileProps: {}", build.toString());
+
+      dateJob.schedule(build);
+    } else {
+      log.info("No tiene satrt time");
+    }
+    return video;
   }
 
   public Video addToStorage(Video video) {
@@ -123,7 +174,7 @@ public class VideosService {
   public Video fromStorageOrNull(String id) {
     log.info("Trying to find in storage video with id: '{}'", id);
     Video video = storage.getOrDefault(id, null);
-    log.info("Video found in storage? {}", Objects.nonNull(video));
+    log.info("Video found in storage? {}", nonNull(video));
     return video;
   }
 
@@ -191,7 +242,7 @@ public class VideosService {
     }
 
     boolean emptyText = clean || Objects.isNull(video) || Objects.isNull(resource);
-    ResourceType resourceType =  resource.getType();
+    ResourceType resourceType = resource.getType();
     long count = video.getResources().stream()
       .filter(resource1 -> resource1.getType().equals(resourceType)).count();
     int size = video.getResources().size();
@@ -201,12 +252,12 @@ public class VideosService {
     log.info("Elementos totales {}", size);
     log.info("({}-{})", l, count);
 
-    String name = emptyText ? "" : resource.getName();
-    String url = emptyText ? "" : resource.getUrl();
-    String description = emptyText ? "" : resource.getDescription();
-    String summary = emptyText ? "" : resource.getSummary();
-    String typeIconUrl = emptyText ? "" : resource.getType().getIconUrl();
-    String typeName = emptyText ? "" : resource.getType().getName();
+    String name = emptyText ? BLANK_STRING : resource.getName();
+    String url = emptyText ? BLANK_STRING : resource.getUrl();
+    String description = emptyText ? BLANK_STRING : resource.getDescription();
+    String summary = emptyText ? BLANK_STRING : resource.getSummary();
+    String typeIconUrl = emptyText ? BLANK_STRING : resource.getType().getIconUrl();
+    String typeName = emptyText ? BLANK_STRING : resource.getType().getName();
 
     dateJob.writeToFile(activeVideo.getActiveResourceTitleFile(), name);
     dateJob.writeToFile(activeVideo.getActiveResourceUrlFile(), url);
@@ -235,7 +286,7 @@ public class VideosService {
 
   public void writeActiveVideoInfo(Boolean clean) throws Exception {
     Video video = activeVideo.getVideo();
-    if (Objects.nonNull(video)) {
+    if (nonNull(video)) {
       writeActiveVideoInfo(video, clean);
     }
     writeResourceData(clean);
@@ -244,9 +295,9 @@ public class VideosService {
   public void writeActiveVideoInfo(Video video, Boolean clean) throws Exception {
     log.info("About to write general files...");
 
-    String showName = clean ? "" : video.getShowName();
-    String showTitle = clean ? "" : video.getShowTitle();
-    String showSubtitle = clean ? "" : video.getShowSubtitle();
+    String showName = clean ? BLANK_STRING : video.getShowName();
+    String showTitle = clean ? BLANK_STRING : video.getShowTitle();
+    String showSubtitle = clean ? BLANK_STRING : video.getShowSubtitle();
 
     dateJob.writeToFile(activeVideo.getShowNameFile(), showName);
     dateJob.writeToFile(activeVideo.getShowTitleFile(), showTitle);
@@ -266,18 +317,20 @@ public class VideosService {
       //TODO: generate a empty png file when the logo is empty.
     }
 
+    createDateJob(video);
+
     log.info("General files has been written.");
 
     log.info("About to write Participant files...");
     for (int i = 0; i < video.getParticipants().size(); i++) {
       try {
         Participant participant = video.getParticipants().get(i);
-        String roleName = clean ? "" : participant.getRole().getName();
-        String name = clean ? "" : participant.getName();
-        String twitter = clean ? "" : participant.getTwitter();
-        String github = clean ? "" : participant.getGithub();
-        String company = clean ? "" : participant.getCompany();
-        String companyTitle = clean ? "" : participant.getCompanyTitle();
+        String roleName = clean ? BLANK_STRING : participant.getRole().getName();
+        String name = clean ? BLANK_STRING : participant.getName();
+        String twitter = clean ? BLANK_STRING : participant.getTwitter();
+        String github = clean ? BLANK_STRING : participant.getGithub();
+        String company = clean ? BLANK_STRING : participant.getCompany();
+        String companyTitle = clean ? BLANK_STRING : participant.getCompanyTitle();
         String tempFile = tmpFilesDirectory + "/participantAvatarTmp" + i + "_.tmp";
         downloadFile(participant.getAvatar(), tempFile);
 
@@ -294,6 +347,68 @@ public class VideosService {
       }
 
     }
+
+
+    // Start get messages for video
+    if (Objects.nonNull(video.getYouTube())) {
+      log.info("Configuración de YouTube encontrada.");
+      YouTubeBroadcast youTube = video.getYouTube();
+      Optional<String> liveChatIdForVideo = youTubeService.getLiveChatIdForVideo(youTube.getUserId(), youTube.getVideoId());
+      if (liveChatIdForVideo.isPresent()) {
+        String liveChatId = liveChatIdForVideo.get();
+        String userId = youTube.getUserId();
+        try {
+          youTubeService.messagesPage(video.getId(), userId, liveChatId, null);
+        } catch (Throwable t) {
+          log.error(t.getMessage(), t);
+        }
+      } else {
+        log.warn("No fue encontrado el video");
+      }
+
+    } else {
+      log.info("Sin informacion de YouTube");
+    }
+  }
+
+  @SneakyThrows
+  private void generateGeneralEmptyFiles() {
+    dateJob.writeToFile(activeVideo.getShowNameFile(), BLANK_STRING);
+    dateJob.writeToFile(activeVideo.getShowTitleFile(), BLANK_STRING);
+    dateJob.writeToFile(activeVideo.getShowSubtitleFile(), BLANK_STRING);
+
+    String name = "/transparent.png";
+    InputStream inputStream = this.getClass().getResourceAsStream(name);
+    Path path = Paths.get(activeVideo.getTransparentImage());
+    Files.copy(inputStream, path, REPLACE_EXISTING);
+
+    for (int i = 0; i < 5; i++) {
+      try {
+        imageFile(activeVideo.getTransparentImage(), activeVideo.getParticipantAvatarFile(i), false, false, 200);
+
+        dateJob.writeToFile(activeVideo.getParticipantRoleFile(i), BLANK_STRING);
+        dateJob.writeToFile(activeVideo.getParticipantNameFile(i), BLANK_STRING);
+        dateJob.writeToFile(activeVideo.getParticipantTwitterFile(i), BLANK_STRING);
+        dateJob.writeToFile(activeVideo.getParticipantGitHubFile(i), BLANK_STRING);
+        dateJob.writeToFile(activeVideo.getParticipantCompanyFile(i), BLANK_STRING);
+        dateJob.writeToFile(activeVideo.getParticipantCompanyTitleFile(i), BLANK_STRING);
+      } catch (Throwable t) {
+        log.error(t.getMessage(), t);
+      }
+    }
+    dateJob.writeToFile(activeVideo.getActiveResourceTitleFile(), BLANK_STRING);
+    dateJob.writeToFile(activeVideo.getActiveResourceUrlFile(), BLANK_STRING);
+    dateJob.writeToFile(activeVideo.getActiveResourceDescriptionFile(), BLANK_STRING);
+    dateJob.writeToFile(activeVideo.getActiveResourceSummaryFile(), BLANK_STRING);
+    dateJob.writeToFile(activeVideo.getActiveResourceTypeIconFile(), BLANK_STRING);
+    dateJob.writeToFile(activeVideo.getActiveResourceTypeNameFile(), BLANK_STRING);
+
+    imageFile(activeVideo.getTransparentImage(), activeVideo.getShowLogoFile(), false, false, 400);
+    imageFile(activeVideo.getTransparentImage(), activeVideo.getActiveResourceTypeAvatarFile(), false, false, 200);
+    imageFile(activeVideo.getTransparentImage(), activeVideo.getActiveCommentImage(), false, false, 500);
+
+    String startTimeFile = activeVideo.getStartTimeFile();
+    dateJob.writeToFile(startTimeFile, BLANK_STRING);
   }
 
   private Boolean downloadFile(String url, String destination) {
@@ -311,7 +426,8 @@ public class VideosService {
   }
 
 
-  public File imageFile(String sourceFile, String destination, Boolean circled, Boolean clean, int size) throws ImageReadException, ImageWriteException, IOException {
+  public File imageFile(String sourceFile, String destination, Boolean circled, Boolean clean, int size) throws
+    ImageReadException, ImageWriteException, IOException {
     File file = new File(sourceFile);
 
     final BufferedImage image = Imaging.getBufferedImage(file);
@@ -378,5 +494,37 @@ public class VideosService {
       String resourceFile = activeVideo.getResourceTypeAvatarFile(resourceType);
       downloadFile(resourceType.getIconUrl(), resourceFile);
     });
+  }
+
+  public void addUserComment(String videoId, UserLiveComment userLiveComment) {
+    List<UserLiveComment> userLiveComments =
+      ofNullable(comments.get(videoId))
+        .orElseGet(ArrayList::new);
+
+    boolean exists = userLiveComments
+      .stream()
+      .anyMatch(
+        inStorage ->
+          Objects.equals(
+            inStorage.getSourceCommentId(),
+            userLiveComment.getSourceCommentId()));
+
+    if (!exists) {
+      log.info("Nuevo mensaje entrante...");
+      byte[] digest = getSha512Digest()
+        .digest(userLiveComment.getUserImageUrl().getBytes());
+
+      byte[] encode = Base64.getEncoder().encode(digest);
+
+      String extension = FilenameUtils.getExtension(userLiveComment.getUserImageUrl());
+
+      String s = new String(encode)
+        .replaceAll("[\\\\/:*?\"<>|]", "") + extension;
+      userLiveComment.setUserLocalImageFileName(s);
+      userLiveComments.add(userLiveComment);
+      log.info(userLiveComment.getUserImageUrl());
+      log.info(userLiveComment.getUserLocalImageFileName());
+    }
+    comments.put(videoId, userLiveComments);
   }
 }

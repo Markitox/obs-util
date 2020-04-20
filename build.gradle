@@ -3,9 +3,10 @@ plugins {
   id "application"
   id "net.ltgt.apt-eclipse" version "0.21"
   id "net.ltgt.apt-idea" version "0.21"
-  id "com.github.ben-manes.versions" version "0.27.0"
+  id "com.github.ben-manes.versions" version "0.28.0"
   id 'jacoco'
-  id 'com.github.kt3k.coveralls' version '2.9.0'
+  id 'com.github.kt3k.coveralls' version '2.10.1'
+  id 'com.google.cloud.tools.jib' version '2.1.0'
 }
 
 
@@ -37,10 +38,14 @@ dependencies {
   implementation "io.micronaut:micronaut-http-server-netty"
   implementation 'commons-io:commons-io:2.6'
   implementation 'org.apache.commons:commons-imaging:1.0-alpha1'
-  implementation 'net.coobird:thumbnailator:0.4.8'
+  implementation 'net.coobird:thumbnailator:0.4.11'
 
   implementation 'net.steppschuh.markdowngenerator:markdowngenerator:1.3.1.1'
   implementation 'org.apache.commons:commons-collections4:4.4'
+  implementation 'com.google.api-client:google-api-client:1.30.9'
+  implementation 'com.google.apis:google-api-services-youtube:v3-rev20200320-1.30.9'
+  implementation 'com.google.oauth-client:google-oauth-client-jetty:1.30.6'
+  implementation 'com.google.auth:google-auth-library-oauth2-http:0.20.0'
 
   runtimeOnly "ch.qos.logback:logback-classic:1.2.3"
   testAnnotationProcessor "org.projectlombok:lombok:${ lombokVersion }"
@@ -78,5 +83,27 @@ jacocoTestReport {
   reports {
     xml.enabled = true // coveralls plugin depends on xml format report
     html.enabled = true
+  }
+}
+
+jib {
+  from {
+    image = 'adoptopenjdk/openjdk13-openj9:jdk-13.0.2_8_openj9-0.18.0-alpine-slim'
+  }
+  to {
+    image = "${ repo }:${ version.toString().toLowerCase() }"
+    //tags = ['latest', "docker.pkg.github.com/${ repo }/obs-util:${ version.toString().toLowerCase() }".toString()]
+    tags = ['latest']
+  }
+  container {
+    jvmFlags = [
+      "-Dcom.sun.management.jmxremote",
+      "-Xmx128m",
+      "-XX:+IdleTuningGcOnIdle",
+      "-Xtune:virtualized",
+      '-Xdebug'
+    ]
+    labels = [maintainer: "Domingo Suarez Torres <domingo.suarez@gmail.com>"]
+    format = 'OCI'
   }
 }

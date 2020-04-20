@@ -24,7 +24,6 @@ public class DatetimeFileWriter implements Callable<FileProps> {
 
   @Override
   public FileProps call() throws Exception {
-    log.info("Escribiendo Archivo: {}", props.getId());
     try {
       write();
     } catch (Throwable t) {
@@ -45,8 +44,8 @@ public class DatetimeFileWriter implements Callable<FileProps> {
     long difference = date.getTime() - nowTime;
     String str;
 
-    log.info("Now:       {}", now);
-    log.info("Scheduled: {}", date);
+    log.trace("Now:       {}", now);
+    log.trace("Scheduled: {}", date);
     if (nowTime < date.getTime()) {
       StringBuilder out = new StringBuilder();
       int seconds = (int) (difference / 1000) % 60;
@@ -77,6 +76,7 @@ public class DatetimeFileWriter implements Callable<FileProps> {
       }
       str = out.toString();
     } else {
+      dateJob.removeTask(props.getId());
       str = props.getStartedMessage();
     }
     dateJob.writeToFile(props.getDestination(), str);

@@ -66,6 +66,18 @@ public class ActiveVideo {
     return baseWorkDir + "/showLogo.png";
   }
 
+  public String getTransparentImage() {
+    return baseWorkDir + "/transparent.png";
+  }
+
+  public String getActiveCommentImage() {
+    return baseWorkDir + "/activeComment.png";
+  }
+
+  public String getStartTimeFile() {
+    return baseWorkDir + "/startTime.txt";
+  }
+
   public String getActiveResourceTitleFile() {
     return baseWorkDir + "/resourceTitle.txt";
   }
